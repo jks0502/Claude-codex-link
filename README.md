@@ -1,4 +1,4 @@
-# codex-ask
+# Claude-codex-link
 
 让 Claude Code（或任何脚本）把任务发进 **Codex 桌面版**里已有的对话，并**准确等到这一轮结束**，拿到 Codex 的最终回复。人可以在 Codex 桌面版里实时看到全过程，也可以随时插话或点停止。
 

@@ -54,7 +54,7 @@ echo "请只回复：收到" | python -X utf8 skills/claude-codex-collab/scripts
 
 ## 环境
 
-- Windows，已安装 Codex 桌面版，以及 npm 版 Codex CLI（脚本调用 `%APPDATA%\\npm\\node_modules\\@openai\\codex\\bin\\codex.js`）。
+- Windows，已安装 Codex 桌面版。脚本优先用桌面版自带的 `%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe` 发送（避免与 npm 版版本不一致），找不到才回退到 npm 版 Codex CLI。
 - Python 3.10+，只用标准库。
 - 2026-10-22 在 Codex 桌面版 + codex-cli 0.163.0 上测试：简单回复、特殊字符原样送达、30 秒带命令的长任务、连发两条（第二条排队）、中途点停止、中途插话、桌面版退出时发送（重开后自动送出）、超时后接着等，均通过。
 

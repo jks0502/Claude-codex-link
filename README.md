@@ -45,7 +45,7 @@ echo "请只回复：收到" | python -X utf8 skills/claude-codex-collab/scripts
 
 ## 环境
 
-- Windows，已安装 Codex 桌面版，以及 npm 版 Codex CLI（脚本调用 `%APPDATA%\npm\node_modules\@openai\codex\bin\codex.js`）。
+- Windows，已安装 Codex 桌面版，以及 npm 版 Codex CLI（脚本调用 `%APPDATA%\\npm\\node_modules\\@openai\\codex\\bin\\codex.js`）。
 - Python 3.10+，只用标准库。
 - 2026-10-22 在 Codex 桌面版 + codex-cli 0.163.0 上测试：简单回复、特殊字符原样送达、30 秒带命令的长任务、连发两条（第二条排队）、中途点停止、中途插话、桌面版退出时发送（重开后自动送出）、超时后接着等，均通过。
 
@@ -54,6 +54,10 @@ echo "请只回复：收到" | python -X utf8 skills/claude-codex-collab/scripts
 ## Claude Code Skill
 
 `skills/claude-codex-collab/` 是把这套协作经验整理成的 Claude Code skill（含最新版 `codex_ask.py`、hook 兜底、分工与踩坑清单）。复制到 `~/.claude/skills/` 即可使用。
+
+## Claude VPS skill
+
+[How to use Claude](skills/how-to-use-claude/SKILL.md) records a privacy-conscious workflow for setting up and validating personal VPS routing for official Claude clients.
 
 ## License
 

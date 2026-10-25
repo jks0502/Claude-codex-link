@@ -6,7 +6,15 @@ usage: python -X utf8 codex_ask.py <thread name|uuid> <message file|-> [--timeou
        python -X utf8 codex_ask.py --show X       (print the recorded reply for nonce X)
        python -X utf8 codex_ask.py --watch <thread> [--timeout s]  (background: exit when any turn ends)
 Status lines go to stderr, the final reply to stdout.
-Exit 0 complete, 2 aborted, 3 cannot send, 4 timeout, 1 other.
+Exit 0 complete, 2 aborted, 3 cannot send, 4 timeout, 5 Codex error, 1 other.
+
+Recovery (added 2026-10-25 after a day of manual babysitting):
+- A turn that ends with an error is not "done": usage limit -> wait until the "try again at" time and send a
+  continue message (up to --retries, default 3); connection failure -> retry after a minute; other errors
+  (e.g. a thread created on another model provider) -> exit 5 with the error text.
+- Aborted turn -> keep following the thread for --grace seconds (default 900): if the user continues in the
+  Codex app, follow that turn and report its reply (exit 0) instead of exiting 2 and missing it.
+- Picked up from the queue but no turn after 8 minutes -> queue the same message once more.
 
 Every ask is recorded in ~/.claude/codex-asks/<nonce>.json. The reply only reaches Claude through the
 background-task notification, which is lost when the Claude process that started the wait has exited
@@ -158,6 +166,37 @@ def finish(nonce, status, reply=''):
              delivered=alive(r.get('claude_pid'), r.get('claude_created')))
 
 
+def send(tid, text):
+    """Queue text into the thread -> queued item id, or None on failure (logged)."""
+    r = subprocess.run(CODEX + ['queue', '--thread', tid, '--message', text],
+                       capture_output=True, text=True, encoding='utf-8')
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0:
+        log('发送失败:', out)
+        return None
+    m = re.search(r'Queued message (\S+)', out)
+    return m and m.group(1)
+
+
+def error_kind(err):
+    """task_complete.error -> ('limit', seconds to wait) | ('network', 60) | ('fatal', 0)."""
+    text = str(err.get('message', err)) if isinstance(err, dict) else str(err)
+    info = json.dumps(err.get('codex_error_info', '')) if isinstance(err, dict) else ''
+    if 'usage_limit' in info or 'usage limit' in text:
+        m = re.search(r'try again at (\d{1,2}):(\d{2})\s*([AP]M)', text)
+        if not m:
+            return 'limit', 3600
+        h, mi = int(m.group(1)) % 12 + (12 if m.group(3) == 'PM' else 0), int(m.group(2))
+        now = time.localtime()
+        target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, h, mi, 0, 0, 0, -1))
+        if target < time.time() - 60:
+            target += 86400
+        return 'limit', max(60, target - time.time() + 90)
+    if 'http_connection_failed' in info or 'Connection failed' in text or 'error sending request' in text:
+        return 'network', 60
+    return 'fatal', 0
+
+
 def scan_rollout(path, tag):
     """For a waiter that died: find the tagged turn in the whole rollout -> (status, reply)."""
     turn = None
@@ -174,6 +213,9 @@ def scan_rollout(path, tag):
             except (KeyError, ValueError):
                 ts = time.time()
             if t == 'task_complete':
+                err = p.get('error')
+                if err:
+                    return 'error', (err.get('message') if isinstance(err, dict) else str(err)) or '', ts
                 return 'done', p.get('last_agent_message') or '', ts
             return 'aborted', p.get('reason') or '', ts
     return ('running' if turn else 'queued'), '', None
@@ -336,15 +378,11 @@ def main():
     nonce = opt('--nonce') or secrets.token_hex(3)
     tag = f'〔Claude#{nonce}〕'
     item_id = None
+    first = msg.rstrip() + '\n\n' + tag
     if not resume:
-        r = subprocess.run(CODEX + ['queue', '--thread', tid, '--message', msg.rstrip() + '\n\n' + tag],
-                           capture_output=True, text=True, encoding='utf-8')
-        out = (r.stdout + r.stderr).strip()
-        if r.returncode != 0:
-            log('发送失败:', out)
-            return 3 if 'No active session' in out else 1
-        m = re.search(r'Queued message (\S+)', out)
-        item_id = m and m.group(1)
+        item_id = send(tid, first)
+        if not item_id:
+            return 3
         log(f'已排队 {item_id}，标记 {tag}，对话 {tid}')
         if not app_running():
             log('Codex 桌面版没在运行：消息留在队列里，打开 Codex 后才会送出')
@@ -357,39 +395,88 @@ def main():
     save_rec(nonce, thread=thread, tid=tid, rollout=path, tag=tag, status='waiting', delivered=False,
              started_at=load_rec(nonce).get('started_at') or time.time(),
              waiter_pid=os.getpid(), waiter_created=wcreated, claude_pid=cpid, claude_created=ccreated)
+    retries, grace = int(opt('--retries', 3)), int(opt('--grace', 900))
     turn, deadline, last_new, was_queued, last_app_check = None, time.time() + timeout, time.time(), None, time.time()
+    picked_at, requeued, aborted_at, user_turn = None, False, None, None
+
+    def resend(text, why):
+        nonlocal item_id, turn, was_queued, picked_at, requeued
+        item_id = send(tid, text)
+        turn, was_queued, picked_at, requeued = None, None, None, False
+        log(f'{why}：已重新排队 {item_id}')
+        return item_id is not None
+
     while time.time() < deadline:
         new = False
         for o in tail.events():
             new = True
             p = o.get('payload', {})
             t = p.get('type')
-            if turn is None and t == 'item_completed' and p.get('item', {}).get('type') == 'UserMessage' \
-                    and tag in user_text(p['item']):
-                turn = p.get('turn_id')
-                if not resume or time.time() - last_new < 5:
-                    log(f'Codex 已开始这一轮 {turn}')
+            if t == 'item_completed' and p.get('item', {}).get('type') == 'UserMessage':
+                if turn is None and tag in user_text(p['item']):
+                    turn, aborted_at, user_turn = p.get('turn_id'), None, None
+                    if not resume or time.time() - last_new < 5:
+                        log(f'Codex 已开始这一轮 {turn}')
+                elif aborted_at and user_turn is None and '〔Claude#' not in user_text(p['item']):
+                    user_turn = p.get('turn_id')
+                    log(f'用户在 Codex 里接着做了，跟进这一轮 {user_turn}')
+            elif user_turn and p.get('turn_id') == user_turn and t in ('task_complete', 'turn_aborted'):
+                reply = p.get('last_agent_message') or p.get('reason') or ''
+                finish(nonce, 'done' if t == 'task_complete' and not p.get('error') else 'aborted', reply)
+                print('（这是用户在 Codex 里接着做的那一轮的回复）\n' + reply)
+                log('用户接着做的那一轮结束了')
+                return 0 if t == 'task_complete' and not p.get('error') else 2
             elif turn and p.get('turn_id') == turn and t == 'task_complete':
-                reply = p.get('last_agent_message') or ''
-                finish(nonce, 'done', reply)
-                print(reply)
-                log(f'完成，用时 {p.get("duration_ms", 0) / 1000:.0f} 秒')
-                return 0
+                err = p.get('error')
+                if not err:
+                    reply = p.get('last_agent_message') or ''
+                    finish(nonce, 'done', reply)
+                    print(reply)
+                    log(f'完成，用时 {p.get("duration_ms", 0) / 1000:.0f} 秒')
+                    return 0
+                kind, wait = error_kind(err)
+                text = err.get('message', str(err)) if isinstance(err, dict) else str(err)
+                if kind != 'fatal' and retries > 0:
+                    retries -= 1
+                    log(f'这一轮出错（{kind}），{wait / 60:.0f} 分钟后自动续做，还剩 {retries} 次：{text[:120]}')
+                    save_rec(nonce, status='waiting', note=f'{kind} retry at {time.ctime(time.time() + wait)}')
+                    deadline = max(deadline, time.time() + wait + timeout)
+                    turn = None
+                    time.sleep(wait)  # events written meanwhile are read on the next pass
+                    cont =(f'（来自 Claude 的自动续做）上一轮因{"额度用完" if kind == "limit" else "网络错误"}中断。'
+                            f'请从断点接着完成本对话里带 {tag} 的那条任务，最后一条消息用中文写，结论放前面。\n\n{tag}')
+                    if not resend(cont, '自动续做'):
+                        finish(nonce, 'error', text)
+                        return 3
+                    break
+                finish(nonce, 'error', text)
+                print(text)
+                log(f'这一轮出错，没有自动重试：{text[:200]}')
+                return 5
             elif turn and p.get('turn_id') == turn and t == 'turn_aborted':
-                finish(nonce, 'aborted', p.get('reason') or '')
-                log(f'这一轮被中止: {p.get("reason")}')
-                return 2
+                log(f'这一轮被中止: {p.get("reason")}，再看 {grace // 60} 分钟用户是否在 Codex 里接着做')
+                aborted_at, turn = time.time(), None
         if new:
             last_new = time.time()
-        if item_id and turn is None:
+        if aborted_at and user_turn is None and time.time() - aborted_at > grace:
+            finish(nonce, 'aborted', 'interrupted')
+            log('被中止后没有人接着做')
+            return 2
+        if item_id and turn is None and not aborted_at:
             q = queued(item_id)
             if q != was_queued:
                 log('在队列里等 Codex 取走' if q else '已被 Codex 取走')
                 was_queued = q
+                picked_at = None if q else time.time()
             if q and time.time() - last_app_check > 60:
                 last_app_check = time.time()
                 if not app_running():
                     log('Codex 桌面版没在运行，消息还在队列里')
+            if picked_at and not requeued and time.time() - picked_at > 480:
+                log('被取走 8 分钟还没开始，可能卡住了，同一条消息再发一次')
+                if not resend(first, '取走后没开始'):
+                    return 3
+                requeued = True
         if time.time() - last_new > 600:
             log('10 分钟没有新记录，可能卡住了，继续等')
             last_new = time.time()

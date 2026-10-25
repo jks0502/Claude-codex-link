@@ -39,7 +39,16 @@ echo "请只回复：收到" | python -X utf8 skills/claude-codex-collab/scripts
 | 2 | 这一轮被停止 |
 | 3 | 发不出去，或对话记录不存在（先在桌面版打开这个对话） |
 | 4 | 超时 |
+| 5 | Codex 报错（重试用尽或不可恢复，stdout 是错误文本） |
 | 1 | 其它错误 |
+
+## 自动恢复（2026-10-25 新增）
+
+- 额度用完：等到 “try again at” 时间自动发续做消息（`--retries`，默认 3）；连接失败：1 分钟后重试。
+- 回合被中止：再跟踪 `--grace` 秒（默认 900），用户在 Codex 里接着做就报告那一轮的回复。
+- 被取走 8 分钟没开始：自动再发一次。
+- `--pending`（配合 SessionStart / UserPromptSubmit hook）补报会话重启后丢失的回复；`--watch <对话>` 在任何一轮结束时退出，用来唤醒 Claude。
+- 离线测试：`python -X utf8 skills/claude-codex-collab/scripts/test_codex_ask.py`。
 
 在 Claude Code 里建议后台运行，结束时会收到通知。
 

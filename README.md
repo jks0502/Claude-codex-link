@@ -25,8 +25,8 @@ Send a message into an existing **Codex desktop** thread and wait for *that exac
 ## 用法
 
 ```bash
-python -X utf8 codex_ask.py "<对话名或ID>" message.txt
-echo "请只回复：收到" | python -X utf8 codex_ask.py "<对话名或ID>" -
+python -X utf8 skills/claude-codex-collab/scripts/codex_ask.py "<对话名或ID>" message.txt
+echo "请只回复：收到" | python -X utf8 skills/claude-codex-collab/scripts/codex_ask.py "<对话名或ID>" -
 ```
 
 - 进度写到 stderr，Codex 的最终回复写到 stdout。
@@ -50,6 +50,10 @@ echo "请只回复：收到" | python -X utf8 codex_ask.py "<对话名或ID>" -
 - 2026-10-22 在 Codex 桌面版 + codex-cli 0.163.0 上测试：简单回复、特殊字符原样送达、30 秒带命令的长任务、连发两条（第二条排队）、中途点停止、中途插话、桌面版退出时发送（重开后自动送出）、超时后接着等，均通过。
 
 依赖的是 Codex 的本地文件格式（`state_5.sqlite`、`queue_1.sqlite`、`rollout-*.jsonl`），不是公开接口，Codex 升级后可能失效。
+
+## Claude Code Skill
+
+`skills/claude-codex-collab/` 是把这套协作经验整理成的 Claude Code skill（含最新版 `codex_ask.py`、hook 兜底、分工与踩坑清单）。复制到 `~/.claude/skills/` 即可使用。
 
 ## License
 

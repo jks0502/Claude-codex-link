@@ -55,10 +55,6 @@ echo "请只回复：收到" | python -X utf8 skills/claude-codex-collab/scripts
 
 `skills/claude-codex-collab/` 是把这套协作经验整理成的 Claude Code skill（含最新版 `codex_ask.py`、hook 兜底、分工与踩坑清单）。复制到 `~/.claude/skills/` 即可使用。
 
-## Claude VPS skill
-
-[How to use Claude](skills/how-to-use-claude/SKILL.md) records a privacy-conscious workflow for setting up and validating personal VPS routing for official Claude clients.
-
 ## License
 
 MIT
